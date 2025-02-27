@@ -1,166 +1,152 @@
-import customtkinter as ctk
-from styling import *
+import json
+import os
+import yt_dlp
+import streamlit as st
 
-class WindowState:
-    def __init__(self):
-        self.current_view = ""
-        self.isOpen = False
-        self.buton
+# Config yönetimi
+CONFIG_FILE = "config.json"
 
-class App(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Modern Arayüz")
-        self.geometry("900x600")
-
-        ctk.set_appearance_mode("dark")
-        self.configure(fg_color=BACKGROUND_COLOR)
-
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-
-        self.sidebar = ctk.CTkFrame(self, width=140, corner_radius=0, fg_color=SIDEBAR_COLOR)
-        self.sidebar.grid(row=0, column=0, rowspan=4, sticky="nsew")
-
-        self.logo_label = ctk.CTkLabel(
-            self.sidebar, text="Menü", font=ctk.CTkFont(size=20, weight="bold"), text_color=TEXT_COLOR
-        )
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
-
-        button_params = {
-            "fg_color": BUTTON_COLOR,
-            "hover_color": BUTTON_HOVER_COLOR,
-            "text_color": TEXT_COLOR,
+def load_config():
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            "mp3_dir": "",
+            "mp4_dir": "",
+            "m4a_dir": ""
         }
-     
-        self.home_button = ctk.CTkButton(
-            self.sidebar, text="Ana Sayfa", command=lambda: self.switch_view(HomePage), **button_params
-        )
-        self.home_button.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
 
-        self.library_button = ctk.CTkButton(
-            self.sidebar, text="Kütüphane", command=lambda: self.switch_view(LibraryPage), **button_params
-        )
-        self.library_button.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
 
-        self.lists_button = ctk.CTkButton(
-            self.sidebar, text="Listeler", command=lambda: self.switch_view(ListsPage), **button_params
-        )
-        self.lists_button.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+# Format seçici fonksiyonu
+def format_selector(ctx):
+    formats = ctx.get('formats')[::-1]
+    best_video = next(f for f in formats if f['vcodec'] != 'none' and f['acodec'] == 'none')
+    audio_ext = {'mp4': 'm4a', 'webm': 'webm'}[best_video['ext']]
+    best_audio = next(f for f in formats if (f['acodec'] != 'none' and f['vcodec'] == 'none' and f['ext'] == audio_ext))
+    
+    yield {
+        'format_id': f'{best_video["format_id"]}+{best_audio["format_id"]}',
+        'ext': best_video['ext'],
+        'requested_formats': [best_video, best_audio],
+        'protocol': f'{best_video["protocol"]}+{best_audio["protocol"]}'
+    }
 
-        self.content_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONTENT_BACKGROUND_COLOR)
-        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        self.current_view = None
-        self.after(10, self.switch_view, HomePage)  # Initial view after mainloop
+# Temel yapılandırmalar
+base_ydl_opts = {
+    "m4a": {
+        'format': 'm4a/bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'm4a',
+        }],
+    },
+    "mp3": {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '0'
+        }],
+    },
+    "mp4": {
+        'format': format_selector,
+    }
+}
 
-    def switch_view(self, view_class):
-        if self.current_view:
-            self.current_view.destroy()
-
-        self.current_view = view_class(self.content_frame)
-        self.current_view.grid(row=0, column=0, sticky="nsew")
-
-
-class BasePage(ctk.CTkFrame):
-    def __init__(self, parent):
-        super().__init__(parent, fg_color=CONTENT_BACKGROUND_COLOR)
-        self.app=app
-        # Tüm alanı kaplamak için grid yapılandırması
-        self.grid_rowconfigure(0, weight=1)  # Yatayda ortala
-        self.grid_columnconfigure(0, weight=1)  # Dikeyde ortala
+def main():
+    st.set_page_config(page_title="MediaDownloader", page_icon="🎵")
+    st.title("MediaDownloader 🎵")
+    
+    # Config yükle
+    config = load_config()
+    
+    # Klasör seçim arayüzü
+    with st.expander("⚙️ Klasör Ayarları", expanded=True):
+        st.write("### Formatlara Özel Klasör Yolları")
         
-        FONT = ctk.CTkFont(size=20)
-        self.label = ctk.CTkLabel(
-            self, 
-            text="", 
-            font=FONT, 
-            text_color=TEXT_COLOR,
-            anchor="center"  # Metni label içinde ortala
-        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            mp3_dir = st.text_input(
+                "MP3 Klasörü", 
+                value=config.get("mp3_dir", ""),
+                help="MP3 dosyalarının kaydedileceği tam yol"
+            )
+        with col2:
+            mp4_dir = st.text_input(
+                "MP4 Klasörü", 
+                value=config.get("mp4_dir", ""),
+                help="MP4 dosyalarının kaydedileceği tam yol"
+            )
+        with col3:
+            m4a_dir = st.text_input(
+                "M4A Klasörü", 
+                value=config.get("m4a_dir", ""),
+                help="M4A dosyalarının kaydedileceği tam yol"
+            )
         
-        # Label'ı hem yatay hem dikeyde ortala
-        self.label.grid(row=0, column=0, sticky="nsew")
+        if st.button("💾 Ayarları Kaydet"):
+            new_config = {
+                "mp3_dir": mp3_dir,
+                "mp4_dir": mp4_dir,
+                "m4a_dir": m4a_dir
+            }
+            save_config(new_config)
+            st.success("Ayarlar başarıyla kaydedildi!")
 
-class HomePage(BasePage):
-    def __init__(self, parent):
-        super().__init__(parent)
-        
-        # Grid yapılandırması (3 satırlık)
-        self.grid_rowconfigure(0, weight=0)  # Araç çubuğu için
-        self.grid_rowconfigure(1, weight=1)  # İçerik için
-        self.grid_columnconfigure(0, weight=1)
-        
-        # Araç Çubuğu
-        self.toolbar = ctk.CTkFrame(
-            self, 
-            fg_color=TOOLBAR_COLOR,  # styling.py'de tanımlı olmalı
-            height=40
-        )
-        self.toolbar.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
-        
-        # Araç çubuğu içeriği
-        self.add_toolbar_components()
-        
-        # Ana içerik
-        self.label.configure(
-            text="Ana Sayfa İçeriği",
-            font=ctk.CTkFont(size=30, weight="bold"))
-        self.label.grid(row=1, column=0, sticky="nsew")
+    
+    url = st.text_input("Medya Linki", placeholder="Lütfen medya linkini yapıştırın")
+    
+    # Format seçim state yönetimi
+    if 'selected_format' not in st.session_state:
+        st.session_state.selected_format = None
 
-    def add_toolbar_components(self):
-        # Buton stilleri
-        btn_style = {
-            "width": 100,
-            "height": 30,
-            "fg_color": BUTTON_COLOR,
-            "hover_color": BUTTON_HOVER_COLOR,
-            "text_color": TEXT_COLOR
-        }
-        
-        # Dosya butonu
-        self.btn_file = ctk.CTkButton(
-            self.toolbar,
-            text="Dosya",
-            **btn_style
-        )
-        self.btn_file.pack(side="left", padx=5)
-        
-        # Düzenle butonu
-        self.btn_edit = ctk.CTkButton(
-            self.toolbar,
-            text="Düzenle",
-            **btn_style
-        )
-        self.btn_edit.pack(side="left", padx=5)
-        
-        # Ayırıcı
-        ctk.CTkLabel(
-            self.toolbar, 
-            text="|", 
-            text_color=SEPARATOR_COLOR
-        ).pack(side="left", padx=5)
-        
-        # Arama çubuğu
-        self.search_entry = ctk.CTkEntry(
-            self.toolbar,
-            width=200,
-            placeholder_text="Arama...",
-            fg_color=ENTRY_BG_COLOR
-        )
-        self.search_entry.pack(side="right", padx=5)
+    selected = st.radio(
+        "📁 İndirme Formatını Seçin:",
+        options=["mp3", "mp4", "m4a"],
+        index=None,
+        horizontal=True
+    )
+    st.session_state.selected_format = selected
+    
+    # İndirme butonu
+    if st.session_state.selected_format and url:
+        if st.button("🚀 İndirmeyi Başlat", type="primary"):
+            try:
+                format_type = st.session_state.selected_format
+                download_dir = config.get(f"{format_type}_dir", "")
+                
+                if not download_dir:
+                    st.error(f"Lütfen önce {format_type.upper()} klasör yolunu ayarlayın!")
+                    return
+                
+                os.makedirs(download_dir, exist_ok=True)
+                
+                # Yapılandırmayı hazırla
+                options = base_ydl_opts[format_type].copy()
+                options["outtmpl"] = os.path.join(
+                    download_dir, 
+                    f"%(title)s.%(ext)s"
+                )
 
-class LibraryPage(BasePage):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.label.configure(text="Kütüphane İçeriği")
+                with st.spinner(f"{format_type.upper()} indiriliyor..."):
+                    with yt_dlp.YoutubeDL(options) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        title = info.get('title', 'bilinmeyen_başlık')
+                        
+                st.success(f"✅ {format_type.upper()} indirme tamamlandı: {title}")
+                st.balloons()
 
+                # İndirilen dosya yolunu göster
+                file_ext = 'mp3' if format_type == 'mp3' else format_type
+                file_path = os.path.join(download_dir, f"{title}.{file_ext}")
+                st.code(f"Kayıt Yolu: {file_path}", language="bash")
 
-class ListsPage(BasePage):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.label.configure(text="Listeler İçeriği")
-
+            except Exception as e:
+                st.error(f"❌ Hata oluştu: {str(e)}")
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    main()
